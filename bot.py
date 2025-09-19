@@ -36,7 +36,14 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID") or 678232202)  # <-- Your Telegram ID
 TOKEN, ADMIN_ACTION, ADMIN_ADD_USER, ADMIN_USER_AMOUNT = range(4)
 
 # ====== GOOGLE SHEETS HELPERS ======
+GSHEET_CLIENT = None
+GSHEET_SHEET = None
+
 def init_gsheet():
+    global GSHEET_CLIENT, GSHEET_SHEET
+    if GSHEET_CLIENT and GSHEET_SHEET:
+        return GSHEET_SHEET
+
     sa_json = os.environ.get("SERVICE_ACCOUNT_JSON")
     if not sa_json:
         raise Exception("SERVICE_ACCOUNT_JSON not set in environment variables")
@@ -44,11 +51,14 @@ def init_gsheet():
     creds_dict = json.loads(sa_json)
     creds = Credentials.from_service_account_info(
         creds_dict,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
     )
-    client = gspread.authorize(creds)
-    sheet = client.open(GSHEET_NAME).worksheet(GSHEET_WORKSHEET)
-    return sheet
+    GSHEET_CLIENT = gspread.authorize(creds)
+    GSHEET_SHEET = GSHEET_CLIENT.open(GSHEET_NAME).worksheet(GSHEET_WORKSHEET)
+    return GSHEET_SHEET
 
 def load_users_from_sheet():
     global USERS
