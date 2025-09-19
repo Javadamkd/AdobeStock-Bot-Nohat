@@ -2,10 +2,8 @@ import logging
 import re
 import requests
 import asyncio
-import json
 import os
-import gspread
-from google.oauth2.service_account import Credentials
+from openpyxl import Workbook, load_workbook
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -13,14 +11,10 @@ from telegram.ext import (
 )
 
 # ====== CONFIG ======
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or "YOUR_BOT_TOKEN_HERE"
-API_KEY = os.environ.get("API_KEY") or "YOUR_API_KEY_HERE"
+TELEGRAM_BOT_TOKEN = "7597535024:AAHJf7wvTfvhsNMljywb-zOPGH4mPct-sBQ"
+API_KEY = "8bOTKxiA1JnMaGVfGDp07hm7jLBXma"
 API_BASE = "https://nehtw.com/api"
 HEADERS = {"X-Api-Key": API_KEY}
-
-# Google Sheets config
-GSHEET_NAME = os.environ.get("GSHEET_NAME") or "BotUsers"
-GSHEET_WORKSHEET = os.environ.get("GSHEET_WORKSHEET") or "Users"
 
 # ====== LOGGING ======
 logging.basicConfig(
@@ -30,74 +24,42 @@ logging.basicConfig(
 
 # ====== IN-MEMORY DATABASE ======
 USERS = {}  # user_id -> {"balance": int, "token": str, "verified": bool}
-ADMIN_ID = int(os.environ.get("ADMIN_ID") or 678232202)  # <-- Your Telegram ID
+ADMIN_ID = 678232202  # <-- Your Telegram ID
+EXCEL_FILE = "users.xlsx"
 
 # ====== STATES ======
 TOKEN, ADMIN_ACTION, ADMIN_ADD_USER, ADMIN_USER_AMOUNT = range(4)
 
-# ====== GOOGLE SHEETS HELPERS ======
-GSHEET_CLIENT = None
-GSHEET_SHEET = None
-
-def init_gsheet():
-    global GSHEET_CLIENT, GSHEET_SHEET
-    if GSHEET_CLIENT and GSHEET_SHEET:
-        return GSHEET_SHEET
-
-    sa_json = os.environ.get("SERVICE_ACCOUNT_JSON")
-    if not sa_json:
-        raise Exception("SERVICE_ACCOUNT_JSON not set in environment variables")
-
-    creds_dict = json.loads(sa_json)
-    creds = Credentials.from_service_account_info(
-        creds_dict,
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-    )
-    GSHEET_CLIENT = gspread.authorize(creds)
-    GSHEET_SHEET = GSHEET_CLIENT.open(GSHEET_NAME).worksheet(GSHEET_WORKSHEET)
-    return GSHEET_SHEET
-
-def load_users_from_sheet():
+# ====== HELPER FUNCTIONS ======
+def load_users_from_excel():
     global USERS
-    sheet = init_gsheet()
-    records = sheet.get_all_records()
+    if not os.path.exists(EXCEL_FILE):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Users"
+        ws.append(["user_id", "token", "balance"])
+        wb.save(EXCEL_FILE)
+    wb = load_workbook(EXCEL_FILE)
+    ws = wb.active
     USERS = {}
-    for row in records:
-        try:
-            user_id = int(row["user_id"])
-            USERS[user_id] = {
-                "token": row["token"],
-                "balance": int(row["balance"]),
-                "verified": False
-            }
-        except Exception:
-            continue
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        user_id, token, balance = row
+        USERS[int(user_id)] = {"token": token, "balance": int(balance), "verified": False}
 
-def save_users_to_sheet():
-    sheet = init_gsheet()
-    sheet.clear()
-    sheet.append_row(["user_id", "token", "balance"])
+def save_users_to_excel():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Users"
+    ws.append(["user_id", "token", "balance"])
     for uid, info in USERS.items():
-        sheet.append_row([uid, info["token"], info["balance"]])
+        ws.append([uid, info["token"], info["balance"]])
+    wb.save(EXCEL_FILE)
 
-def add_user_to_sheet(uid, token, balance):
-    sheet = init_gsheet()
-    sheet.append_row([uid, token, balance])
-
-def update_user_balance(uid):
-    sheet = init_gsheet()
-    records = sheet.get_all_records()
-    for i, row in enumerate(records, start=2):
-        if int(row["user_id"]) == uid:
-            sheet.update(f"C{i}", USERS[uid]["balance"])
-            break
+# Load users initially
+load_users_from_excel()
 
 # ====== USER COMMANDS ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    load_users_from_sheet()
     user_id = update.message.from_user.id
     if user_id not in USERS or not USERS[user_id].get("verified"):
         await update.message.reply_text("🔑 Please enter your access token to use the bot:")
@@ -197,7 +159,7 @@ async def confirm_or_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             task_id = data["task_id"]
             context.user_data.pop("pending_order", None)
             USERS[user_id]["balance"] -= cost
-            update_user_balance(user_id)
+            save_users_to_excel()  # Save balance update
 
             await query.edit_message_text(
                 f"✅ Order placed!\n🆔 Task ID: `{task_id}`\n💲 Deducted: {cost} point\n⏳ Waiting for file to be ready...",
@@ -246,9 +208,8 @@ async def admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    load_users_from_sheet()
-
     if data == "list_users":
+        load_users_from_excel()  # Always load fresh data from Excel
         if not USERS:
             await query.edit_message_text("No users found.")
             return ADMIN_ACTION
@@ -272,9 +233,9 @@ async def admin_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADMIN_ADD_USER
     uid, token, balance = parts
     USERS[int(uid)] = {"balance": int(balance), "token": token, "verified": False}
-    add_user_to_sheet(int(uid), token, int(balance))
+    save_users_to_excel()  # Save new user to Excel
     await update.message.reply_text(f"✅ Added user {uid} with balance {balance} and token {token}")
-    return ConversationHandler.END
+    return ADMIN_ACTION  # Keep admin session open
 
 async def admin_user_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -294,10 +255,10 @@ async def admin_user_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USERS[uid]["balance"] += amount
         await update.message.reply_text(f"✅ Added {amount} to user {uid}. New balance: {USERS[uid]['balance']}")
 
-    update_user_balance(uid)
+    save_users_to_excel()  # Save updated balance
     context.user_data.pop("admin_user_id", None)
     context.user_data.pop("deduct_mode", None)
-    return ConversationHandler.END
+    return ADMIN_ACTION  # Keep admin session open
 
 # ====== INLINE BUTTON HANDLER ======
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -310,8 +271,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ====== MAIN ======
 def main():
-    load_users_from_sheet()  # Load at startup
-
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # User start & token
@@ -330,7 +289,9 @@ def main():
             ADMIN_ADD_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_user)],
             ADMIN_USER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_user_amount)],
         },
-        fallbacks=[]
+        fallbacks=[],
+        name="admin_conversation",
+        persistent=False
     )
     app.add_handler(admin_conv)
 
