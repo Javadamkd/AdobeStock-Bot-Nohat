@@ -5,7 +5,8 @@ import asyncio
 import random
 import string
 import os
-from openpyxl import Workbook, load_workbook
+import gspread
+from google.oauth2.service_account import Credentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -18,6 +19,11 @@ API_KEY = "8bOTKxiA1JnMaGVfGDp07hm7jLBXma"
 API_BASE = "https://nehtw.com/api"
 HEADERS = {"X-Api-Key": API_KEY}
 
+# Google Sheets config
+GSHEET_NAME = "BotUsers"  # Your Google Sheet name
+GSHEET_WORKSHEET = "Users"  # Worksheet name
+SERVICE_ACCOUNT_FILE = "service_account.json"  # Path to your JSON credentials
+
 # ====== LOGGING ======
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -27,41 +33,55 @@ logging.basicConfig(
 # ====== IN-MEMORY DATABASE ======
 USERS = {}  # user_id -> {"balance": int, "token": str, "verified": bool}
 ADMIN_ID = 678232202  # <-- Your Telegram ID
-EXCEL_FILE = "users.xlsx"
 
 # ====== STATES ======
 TOKEN, ADMIN_ACTION, ADMIN_ADD_USER, ADMIN_USER_AMOUNT = range(4)
 
-# ====== HELPER FUNCTIONS ======
-def load_users_from_excel():
+# ====== GOOGLE SHEETS HELPERS ======
+def init_gsheet():
+    creds = Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    client = gspread.authorize(creds)
+    sheet = client.open(GSHEET_NAME).worksheet(GSHEET_WORKSHEET)
+    return sheet
+
+def load_users_from_sheet():
     global USERS
-    if not os.path.exists(EXCEL_FILE):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Users"
-        ws.append(["user_id", "token", "balance"])
-        wb.save(EXCEL_FILE)
-    wb = load_workbook(EXCEL_FILE)
-    ws = wb.active
+    sheet = init_gsheet()
+    records = sheet.get_all_records()
     USERS = {}
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        user_id, token, balance = row
-        USERS[int(user_id)] = {"token": token, "balance": int(balance), "verified": False}
+    for row in records:
+        user_id = int(row["user_id"])
+        USERS[user_id] = {
+            "token": row["token"],
+            "balance": int(row["balance"]),
+            "verified": False
+        }
 
-def save_users_to_excel():
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Users"
-    ws.append(["user_id", "token", "balance"])
+def save_users_to_sheet():
+    sheet = init_gsheet()
+    sheet.clear()
+    sheet.append_row(["user_id", "token", "balance"])
     for uid, info in USERS.items():
-        ws.append([uid, info["token"], info["balance"]])
-    wb.save(EXCEL_FILE)
+        sheet.append_row([uid, info["token"], info["balance"]])
 
-# Load users initially
-load_users_from_excel()
+def add_user_to_sheet(uid, token, balance):
+    sheet = init_gsheet()
+    sheet.append_row([uid, token, balance])
+
+def update_user_balance(uid):
+    sheet = init_gsheet()
+    records = sheet.get_all_records()
+    for i, row in enumerate(records, start=2):
+        if int(row["user_id"]) == uid:
+            sheet.update(f"C{i}", USERS[uid]["balance"])
+            break
 
 # ====== USER COMMANDS ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    load_users_from_sheet()
     user_id = update.message.from_user.id
     if user_id not in USERS or not USERS[user_id].get("verified"):
         await update.message.reply_text("🔑 Please enter your access token to use the bot:")
@@ -161,7 +181,7 @@ async def confirm_or_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             task_id = data["task_id"]
             context.user_data.pop("pending_order", None)
             USERS[user_id]["balance"] -= cost
-            save_users_to_excel()  # Save balance update
+            update_user_balance(user_id)
 
             await query.edit_message_text(
                 f"✅ Order placed!\n🆔 Task ID: `{task_id}`\n💲 Deducted: {cost} point\n⏳ Waiting for file to be ready...",
@@ -210,8 +230,9 @@ async def admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
+    load_users_from_sheet()
+
     if data == "list_users":
-        load_users_from_excel()  # Always load fresh data from Excel
         if not USERS:
             await query.edit_message_text("No users found.")
             return ADMIN_ACTION
@@ -235,7 +256,7 @@ async def admin_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADMIN_ADD_USER
     uid, token, balance = parts
     USERS[int(uid)] = {"balance": int(balance), "token": token, "verified": False}
-    save_users_to_excel()  # Save new user to Excel
+    add_user_to_sheet(int(uid), token, int(balance))
     await update.message.reply_text(f"✅ Added user {uid} with balance {balance} and token {token}")
     return ConversationHandler.END
 
@@ -257,7 +278,7 @@ async def admin_user_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USERS[uid]["balance"] += amount
         await update.message.reply_text(f"✅ Added {amount} to user {uid}. New balance: {USERS[uid]['balance']}")
 
-    save_users_to_excel()  # Save updated balance
+    update_user_balance(uid)
     context.user_data.pop("admin_user_id", None)
     context.user_data.pop("deduct_mode", None)
     return ConversationHandler.END
@@ -273,6 +294,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ====== MAIN ======
 def main():
+    load_users_from_sheet()  # Load at startup
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # User start & token
