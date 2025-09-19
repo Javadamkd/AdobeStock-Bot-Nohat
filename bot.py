@@ -2,8 +2,7 @@ import logging
 import re
 import requests
 import asyncio
-import random
-import string
+import json
 import os
 import gspread
 from google.oauth2.service_account import Credentials
@@ -14,15 +13,14 @@ from telegram.ext import (
 )
 
 # ====== CONFIG ======
-TELEGRAM_BOT_TOKEN = "7597535024:AAHJf7wvTfvhsNMljywb-zOPGH4mPct-sBQ"
-API_KEY = "8bOTKxiA1JnMaGVfGDp07hm7jLBXma"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or "YOUR_BOT_TOKEN_HERE"
+API_KEY = os.environ.get("API_KEY") or "YOUR_API_KEY_HERE"
 API_BASE = "https://nehtw.com/api"
 HEADERS = {"X-Api-Key": API_KEY}
 
 # Google Sheets config
-GSHEET_NAME = "BotUsers"  # Your Google Sheet name
-GSHEET_WORKSHEET = "Users"  # Worksheet name
-SERVICE_ACCOUNT_FILE = "service_account.json"  # Path to your JSON credentials
+GSHEET_NAME = os.environ.get("GSHEET_NAME") or "BotUsers"
+GSHEET_WORKSHEET = os.environ.get("GSHEET_WORKSHEET") or "Users"
 
 # ====== LOGGING ======
 logging.basicConfig(
@@ -32,15 +30,20 @@ logging.basicConfig(
 
 # ====== IN-MEMORY DATABASE ======
 USERS = {}  # user_id -> {"balance": int, "token": str, "verified": bool}
-ADMIN_ID = 678232202  # <-- Your Telegram ID
+ADMIN_ID = int(os.environ.get("ADMIN_ID") or 678232202)  # <-- Your Telegram ID
 
 # ====== STATES ======
 TOKEN, ADMIN_ACTION, ADMIN_ADD_USER, ADMIN_USER_AMOUNT = range(4)
 
 # ====== GOOGLE SHEETS HELPERS ======
 def init_gsheet():
-    creds = Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
+    sa_json = os.environ.get("SERVICE_ACCOUNT_JSON")
+    if not sa_json:
+        raise Exception("SERVICE_ACCOUNT_JSON not set in environment variables")
+
+    creds_dict = json.loads(sa_json)
+    creds = Credentials.from_service_account_info(
+        creds_dict,
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     client = gspread.authorize(creds)
@@ -53,12 +56,15 @@ def load_users_from_sheet():
     records = sheet.get_all_records()
     USERS = {}
     for row in records:
-        user_id = int(row["user_id"])
-        USERS[user_id] = {
-            "token": row["token"],
-            "balance": int(row["balance"]),
-            "verified": False
-        }
+        try:
+            user_id = int(row["user_id"])
+            USERS[user_id] = {
+                "token": row["token"],
+                "balance": int(row["balance"]),
+                "verified": False
+            }
+        except Exception:
+            continue
 
 def save_users_to_sheet():
     sheet = init_gsheet()
