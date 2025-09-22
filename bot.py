@@ -11,7 +11,7 @@ from telegram.ext import (
 )
 
 # ====== CONFIG ======
-TELEGRAM_BOT_TOKEN = "7597535024:AAHJf7wvTfvhsNMljywb-zOPGH4mPct-sBQ"
+TELEGRAM_BOT_TOKEN = "7597535024:AAFIvjiRmwM_0UcTS4AT6VtbFwxWrgTbvbQ"
 API_KEY = "8bOTKxiA1JnMaGVfGDp07hm7jLBXma"
 API_BASE = "https://nehtw.com/api"
 HEADERS = {"X-Api-Key": API_KEY}
